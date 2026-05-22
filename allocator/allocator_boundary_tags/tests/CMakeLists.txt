@@ -1,12 +1,23 @@
+include(FetchContent)
+
+FetchContent_Declare(
+    googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG release-1.12.1
+)
+
+FetchContent_MakeAvailable(googletest)
+
 add_executable(
-        sys_prog_allctr_allctr_bndr_tgs_tests
-        allocator_boundary_tags_tests.cpp)
+    tests_boundary_tags
+    allocator_boundary_tags_tests.cpp
+)
 
 target_link_libraries(
-        sys_prog_allctr_allctr_bndr_tgs_tests
-        PRIVATE
-        gtest_main)
-target_link_libraries(
-        sys_prog_allctr_allctr_bndr_tgs_tests
-        PRIVATE
-        sys_prog_allctr_allctr_bndr_tgs)
+    tests_boundary_tags
+    PRIVATE
+    gtest_main
+    sys_prog_allctr_allctr_bndry_tgs
+    sys_prog_cmmn
+    sys_prog_allctr_allctr
+)
