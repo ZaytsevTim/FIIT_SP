@@ -140,7 +140,7 @@ allocator_buddies_system::allocator_buddies_system(
         std::pmr::memory_resource *parent_allocator,
         allocator_with_fit_mode::fit_mode allocate_fit_mode)
 {
-    // Если родитель не указан — используем глобальный аллокатор по умолчанию
+    // Если родитель не указан — используем дефолтный аллокатор
     if (parent_allocator == nullptr)
         parent_allocator = std::pmr::get_default_resource();
     
