@@ -12,6 +12,7 @@ constexpr size_t free_head_off = mutex_off + sizeof(std::mutex);
 constexpr size_t block_next_or_owner_off = 0;
 constexpr size_t block_size_off = sizeof(void*);
 
+// Деструктор: освобождаем доверенную память и уничтожаем мьютекс
 allocator_sorted_list::~allocator_sorted_list()
 {
     if (_trusted_memory == nullptr) return;
@@ -27,6 +28,7 @@ allocator_sorted_list::~allocator_sorted_list()
     _trusted_memory = nullptr;
 }
 
+// Конструктор перемещения: забираем владение у другого объекта
 allocator_sorted_list::allocator_sorted_list(
     allocator_sorted_list &&other) noexcept
     : _trusted_memory(nullptr)
@@ -41,6 +43,7 @@ allocator_sorted_list::allocator_sorted_list(
     other._trusted_memory = nullptr;
 }
 
+// Оператор перемещающего присваивания
 allocator_sorted_list &allocator_sorted_list::operator=(
     allocator_sorted_list &&other) noexcept
 {
@@ -105,6 +108,7 @@ allocator_sorted_list &allocator_sorted_list::operator=(
     return *this;
 }
 
+// Конструктор: выделяем доверенную память и инициализируем служебные данные
 allocator_sorted_list::allocator_sorted_list(
     size_t space_size,
     std::pmr::memory_resource *parent_allocator,
@@ -130,6 +134,7 @@ allocator_sorted_list::allocator_sorted_list(
     *reinterpret_cast<size_t*>(reinterpret_cast<char*>(first_block) + block_size_off) = space_size;
 }
 
+// Выделение памяти: поиск подходящего блока по стратегии (first/best/worst fit)
 [[nodiscard]] void *allocator_sorted_list::do_allocate_sm(size_t size)
 {
     if (size == 0) size = 1;
@@ -188,14 +193,12 @@ allocator_sorted_list::allocator_sorted_list(
         cur = *reinterpret_cast<void**>(cur);
     }
     
-    if (chosen == nullptr)
-    {
-        throw std::bad_alloc();
-    }
+    if (chosen == nullptr) throw std::bad_alloc();
     
     const size_t free_sz = *reinterpret_cast<size_t*>(reinterpret_cast<char*>(chosen) + block_size_off);
     const size_t remainder = free_sz - size;
     
+    // Разделение блока, если остаток достаточно велик (у нового сайз = остаток - заголовок)
     if (remainder >= block_metadata_size + 1)
     {
         void* new_free = reinterpret_cast<char*>(chosen) + block_metadata_size + size;
@@ -203,32 +206,26 @@ allocator_sorted_list::allocator_sorted_list(
         *reinterpret_cast<size_t*>(reinterpret_cast<char*>(new_free) + block_size_off) = remainder - block_metadata_size;
         
         if (chosen_prev == nullptr)
-        {
             free_head = new_free;
-        }
         else
-        {
             *reinterpret_cast<void**>(chosen_prev) = new_free;
-        }
         
         *reinterpret_cast<size_t*>(reinterpret_cast<char*>(chosen) + block_size_off) = size;
     }
-    else
+    else // а если остаток мал, то всё место идет под запрос
     {
         if (chosen_prev == nullptr)
-        {
             free_head = *reinterpret_cast<void**>(chosen);
-        }
         else
-        {
             *reinterpret_cast<void**>(chosen_prev) = *reinterpret_cast<void**>(chosen);
-        }
     }
     
+    // Помечаем блок как занятый
     *reinterpret_cast<void**>(reinterpret_cast<char*>(chosen) + block_next_or_owner_off) = _trusted_memory;
     return reinterpret_cast<char*>(chosen) + block_metadata_size;
 }
 
+// Конструктор копирования
 allocator_sorted_list::allocator_sorted_list(const allocator_sorted_list &other)
 {
     if (other._trusted_memory == nullptr)
@@ -245,10 +242,7 @@ allocator_sorted_list::allocator_sorted_list(const allocator_sorted_list &other)
     auto other_mode = *reinterpret_cast<allocator_with_fit_mode::fit_mode*>(other_base + mode_off);
     size_t other_managed = *reinterpret_cast<size_t*>(other_base + managed_off);
     
-    if (other_parent == nullptr)
-    {
-        other_parent = std::pmr::get_default_resource();
-    }
+    if (other_parent == nullptr) other_parent = std::pmr::get_default_resource();
     
     const size_t total_size = allocator_metadata_size + block_metadata_size + other_managed;
     _trusted_memory = other_parent->allocate(total_size);
@@ -265,20 +259,22 @@ allocator_sorted_list::allocator_sorted_list(const allocator_sorted_list &other)
     *reinterpret_cast<size_t*>(reinterpret_cast<char*>(first_block) + block_size_off) = other_managed;
 }
 
+// Оператор копирующего присваивания (copy-and-swap) Создаём временную копию, затем перемещаем её в *this
 allocator_sorted_list &allocator_sorted_list::operator=(const allocator_sorted_list &other)
 {
     if (this == &other) return *this;
-    
     allocator_sorted_list tmp(other);
     *this = std::move(tmp);
     return *this;
 }
 
+// Сравнение аллокаторов: совместимы, если одного типа
 bool allocator_sorted_list::do_is_equal(const std::pmr::memory_resource &other) const noexcept
 {
     return dynamic_cast<const allocator_sorted_list*>(&other) != nullptr;
 }
 
+// Освобождение памяти: вставка блока в отсортированный список и объединение с соседями (coalescing)
 void allocator_sorted_list::do_deallocate_sm(void *at)
 {
     if (at == nullptr) return;
@@ -290,24 +286,22 @@ void allocator_sorted_list::do_deallocate_sm(void *at)
     const size_t managed_size = *reinterpret_cast<size_t*>(base + managed_off);
     char* region_begin = base + allocator_metadata_size;
     char* region_end = region_begin + block_metadata_size + managed_size;
-    char* payload = reinterpret_cast<char*>(at);
+    char* payload = reinterpret_cast<char*>(at); // указатель на пользовательские данные 
     
     if (payload < region_begin + block_metadata_size || payload >= region_end)
-    {
         throw std::invalid_argument("allocator_sorted_list::do_deallocate_sm: pointer out of bounds");
-    }
     
-    void* block = payload - block_metadata_size;
+    void* block = payload - block_metadata_size; //указатель на начало блока (включая заголовок).
     
+    // Чек что блок принадлежит именно этому аллакатору (овнер)
     if (*reinterpret_cast<void**>(reinterpret_cast<char*>(block) + block_next_or_owner_off) != _trusted_memory)
-    {
         throw std::invalid_argument("allocator_sorted_list::do_deallocate_sm: block does not belong to this allocator");
-    }
     
     void*& free_head = *reinterpret_cast<void**>(base + free_head_off);
     void* prev = nullptr;
     void* cur = free_head;
     
+    //ВСТАВКА С СОРТИРОВКОЙ ПО АДРЕСУ: ищем место, где cur >= block. Цикл идёт пока текущий блок < освобождаемого.
     while (cur != nullptr && cur < block)
     {
         prev = cur;
@@ -317,14 +311,12 @@ void allocator_sorted_list::do_deallocate_sm(void *at)
     *reinterpret_cast<void**>(block) = cur;
     
     if (prev == nullptr)
-    {
         free_head = block;
-    }
     else
-    {
         *reinterpret_cast<void**>(prev) = block;
-    }
     
+    // Coalescing с правым соседом
+    // если конец освобождаемого блока совпадает с началом следующего свободного блока (cur) — объединяем их. Размер увеличивается, next перепрыгивает через cur.
     if (cur != nullptr)
     {
         size_t& block_size_ref = *reinterpret_cast<size_t*>(reinterpret_cast<char*>(block) + block_size_off);
@@ -338,6 +330,8 @@ void allocator_sorted_list::do_deallocate_sm(void *at)
         }
     }
     
+    // Coalescing с левым соседом
+    // если конец предыдущего свободного блока совпадает с началом освобождаемого — объединяем их. Размер предыдущего увеличивается, его next перепрыгивает через освобождаемый блок.
     if (prev != nullptr)
     {
         char* prev_end = reinterpret_cast<char*>(prev) + block_metadata_size +
@@ -352,6 +346,7 @@ void allocator_sorted_list::do_deallocate_sm(void *at)
     }
 }
 
+// Смена стратегии выделения
 inline void allocator_sorted_list::set_fit_mode(allocator_with_fit_mode::fit_mode mode)
 {
     char* base = reinterpret_cast<char*>(_trusted_memory);
@@ -360,6 +355,7 @@ inline void allocator_sorted_list::set_fit_mode(allocator_with_fit_mode::fit_mod
     *reinterpret_cast<allocator_with_fit_mode::fit_mode*>(base + mode_off) = mode;
 }
 
+// Получение информации о всех блоках (для тестов)
 std::vector<allocator_test_utils::block_info> allocator_sorted_list::get_blocks_info() const noexcept
 {
     if (_trusted_memory == nullptr) return {};
@@ -370,6 +366,7 @@ std::vector<allocator_test_utils::block_info> allocator_sorted_list::get_blocks_
     return get_blocks_info_inner();
 }
 
+// Внутренний метод получения информации о блоках
 std::vector<allocator_test_utils::block_info> allocator_sorted_list::get_blocks_info_inner() const
 {
     std::vector<allocator_test_utils::block_info> result;
@@ -405,6 +402,7 @@ std::vector<allocator_test_utils::block_info> allocator_sorted_list::get_blocks_
     return result;
 }
 
+// Итераторы
 allocator_sorted_list::sorted_free_iterator allocator_sorted_list::free_begin() const noexcept
 {
     return sorted_free_iterator(_trusted_memory);
@@ -425,6 +423,7 @@ allocator_sorted_list::sorted_iterator allocator_sorted_list::end() const noexce
     return sorted_iterator();
 }
 
+// sorted_free_iterator
 bool allocator_sorted_list::sorted_free_iterator::operator==(
     const allocator_sorted_list::sorted_free_iterator &other) const noexcept
 {
@@ -440,9 +439,7 @@ bool allocator_sorted_list::sorted_free_iterator::operator!=(
 allocator_sorted_list::sorted_free_iterator &allocator_sorted_list::sorted_free_iterator::operator++() & noexcept
 {
     if (_free_ptr != nullptr)
-    {
         _free_ptr = *reinterpret_cast<void**>(_free_ptr);
-    }
     return *this;
 }
 
@@ -482,6 +479,7 @@ allocator_sorted_list::sorted_free_iterator::sorted_free_iterator(void *trusted)
     _free_ptr = *reinterpret_cast<void**>(base + free_head_off);
 }
 
+// sorted_iterator
 bool allocator_sorted_list::sorted_iterator::operator==(
     const allocator_sorted_list::sorted_iterator &other) const noexcept
 {
@@ -496,10 +494,7 @@ bool allocator_sorted_list::sorted_iterator::operator!=(
 
 allocator_sorted_list::sorted_iterator &allocator_sorted_list::sorted_iterator::operator++() & noexcept
 {
-    if (_current_ptr == nullptr || _trusted_memory == nullptr)
-    {
-        return *this;
-    }
+    if (_current_ptr == nullptr || _trusted_memory == nullptr) return *this;
     
     char* base = reinterpret_cast<char*>(_trusted_memory);
     size_t managed_size = *reinterpret_cast<size_t*>(base + managed_off);
@@ -509,13 +504,9 @@ allocator_sorted_list::sorted_iterator &allocator_sorted_list::sorted_iterator::
     char* next = reinterpret_cast<char*>(_current_ptr) + allocator_sorted_list::block_metadata_size + cur_size;
     
     if (next >= end)
-    {
         _current_ptr = nullptr;
-    }
     else
-    {
         _current_ptr = next;
-    }
     
     return *this;
 }
@@ -564,10 +555,7 @@ allocator_sorted_list::sorted_iterator::sorted_iterator(void *trusted)
 
 bool allocator_sorted_list::sorted_iterator::occupied() const noexcept
 {
-    if (_current_ptr == nullptr || _trusted_memory == nullptr)
-    {
-        return false;
-    }
+    if (_current_ptr == nullptr || _trusted_memory == nullptr) return false;
     
     char* base = reinterpret_cast<char*>(_trusted_memory);
     void* free_head = *reinterpret_cast<void**>(base + free_head_off);
@@ -575,10 +563,7 @@ bool allocator_sorted_list::sorted_iterator::occupied() const noexcept
     
     while (cur != nullptr)
     {
-        if (cur == _current_ptr)
-        {
-            return false;
-        }
+        if (cur == _current_ptr) return false;
         cur = *reinterpret_cast<void**>(cur);
     }
     

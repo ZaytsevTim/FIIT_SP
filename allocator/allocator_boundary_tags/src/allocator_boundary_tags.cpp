@@ -4,6 +4,7 @@
 #include <new>
 #include <stdexcept>
 
+// Смещения в доверенной памяти с учётом выравнивания (alignof)
 constexpr size_t parent_off = 0;
 constexpr size_t mode_off =
     ((parent_off + sizeof(std::pmr::memory_resource*) + alignof(allocator_with_fit_mode::fit_mode) - 1) /
@@ -19,12 +20,11 @@ constexpr size_t first_occ_off =
 constexpr size_t kAllocatorMetadataSize = first_occ_off + sizeof(void*);
 constexpr size_t kOccupiedBlockMetadataSize = sizeof(size_t) + sizeof(void*) + sizeof(void*) + sizeof(void*);
 
+// Деструктор: освобождаем доверенную память и уничтожаем мьютекс
 allocator_boundary_tags::~allocator_boundary_tags()
 {
-    if (_trusted_memory == nullptr)
-    {
-        return;
-    }
+    if (_trusted_memory == nullptr) return;
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     auto* parent = *reinterpret_cast<std::pmr::memory_resource**>(base + parent_off);
     const size_t managed = *reinterpret_cast<size_t*>(base + managed_off);
@@ -34,14 +34,13 @@ allocator_boundary_tags::~allocator_boundary_tags()
     _trusted_memory = nullptr;
 }
 
+// Конструктор перемещения: забираем владение у другого объекта
 allocator_boundary_tags::allocator_boundary_tags(
-    allocator_boundary_tags &&other) noexcept:
-    _trusted_memory(nullptr)
+    allocator_boundary_tags &&other) noexcept
+    : _trusted_memory(nullptr)
 {
-    if (other._trusted_memory == nullptr)
-    {
-        return;
-    }
+    if (other._trusted_memory == nullptr) return;
+    
     char* other_base = reinterpret_cast<char*>(other._trusted_memory);
     auto* other_mtx = reinterpret_cast<std::mutex*>(other_base + mutex_off);
     std::lock_guard<std::mutex> lock(*other_mtx);
@@ -49,26 +48,28 @@ allocator_boundary_tags::allocator_boundary_tags(
     other._trusted_memory = nullptr;
 }
 
+// Оператор перемещающего присваивания
 allocator_boundary_tags &allocator_boundary_tags::operator=(
     allocator_boundary_tags &&other) noexcept
 {
-    if (this == &other)
-    {
-        return *this;
-    }
+    if (this == &other) return *this;
+    
     std::mutex* this_mtx = nullptr;
     if (_trusted_memory != nullptr)
     {
         char* this_base = reinterpret_cast<char*>(_trusted_memory);
         this_mtx = reinterpret_cast<std::mutex*>(this_base + mutex_off);
     }
+    
     std::mutex* other_mtx = nullptr;
     if (other._trusted_memory != nullptr)
     {
         char* other_base = reinterpret_cast<char*>(other._trusted_memory);
         other_mtx = reinterpret_cast<std::mutex*>(other_base + mutex_off);
     }
+    
     void* old_memory = nullptr;
+    
     if (this_mtx != nullptr && other_mtx != nullptr && this_mtx != other_mtx)
     {
         std::scoped_lock lock(*this_mtx, *other_mtx);
@@ -96,6 +97,7 @@ allocator_boundary_tags &allocator_boundary_tags::operator=(
         _trusted_memory = other._trusted_memory;
         other._trusted_memory = nullptr;
     }
+    
     if (old_memory != nullptr)
     {
         char* old_base = reinterpret_cast<char*>(old_memory);
@@ -105,20 +107,21 @@ allocator_boundary_tags &allocator_boundary_tags::operator=(
         std::destroy_at(mtx);
         parent->deallocate(old_memory, kAllocatorMetadataSize + managed, alignof(std::max_align_t));
     }
+    
     return *this;
 }
 
+// Конструктор: выделяем доверенную память и инициализируем служебные данные
 allocator_boundary_tags::allocator_boundary_tags(
         size_t space_size,
         std::pmr::memory_resource *parent_allocator,
         allocator_with_fit_mode::fit_mode allocate_fit_mode)
 {
-    if (parent_allocator == nullptr)
-    {
-        parent_allocator = std::pmr::get_default_resource();
-    }
+    if (parent_allocator == nullptr) parent_allocator = std::pmr::get_default_resource();
+    
     const size_t total_size = kAllocatorMetadataSize + space_size;
     _trusted_memory = parent_allocator->allocate(total_size, alignof(std::max_align_t));
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     *reinterpret_cast<std::pmr::memory_resource**>(base + parent_off) = parent_allocator;
     *reinterpret_cast<allocator_with_fit_mode::fit_mode*>(base + mode_off) = allocate_fit_mode;
@@ -127,30 +130,34 @@ allocator_boundary_tags::allocator_boundary_tags(
     *reinterpret_cast<void**>(base + first_occ_off) = nullptr;
 }
 
-[[nodiscard]] void *allocator_boundary_tags::do_allocate_sm(
-    size_t size)
+// Выделение памяти: поиск подходящего промежутка между занятыми блоками
+[[nodiscard]] void *allocator_boundary_tags::do_allocate_sm(size_t size)
 {
     char* base = reinterpret_cast<char*>(_trusted_memory);
     auto* mtx = reinterpret_cast<std::mutex*>(base + mutex_off);
     std::lock_guard<std::mutex> lock(*mtx);
+    
     const size_t needed = kOccupiedBlockMetadataSize + size;
     const auto mode = *reinterpret_cast<allocator_with_fit_mode::fit_mode*>(base + mode_off);
     void* head = *reinterpret_cast<void**>(base + first_occ_off);
     char* region_begin = base + kAllocatorMetadataSize;
     char* region_end = region_begin + *reinterpret_cast<size_t*>(base + managed_off);
+    
     if (needed > *reinterpret_cast<size_t*>(base + managed_off))
-    {
         throw std::bad_alloc();
-    }
+    
     void* best_prev = nullptr;
     void* best_next = nullptr;
     char* best_start = nullptr;
     size_t best_gap = 0;
+    
+    // Первый проход: first_fit
     if (mode == allocator_with_fit_mode::fit_mode::first_fit)
     {
         void* prev = nullptr;
         void* cur = head;
         char* cursor = region_begin;
+        
         while (cur != nullptr)
         {
             char* cur_start = reinterpret_cast<char*>(cur);
@@ -167,6 +174,7 @@ allocator_boundary_tags::allocator_boundary_tags(
             prev = cur;
             cur = *reinterpret_cast<void**>(reinterpret_cast<char*>(cur) + sizeof(size_t) + sizeof(void*));
         }
+        
         if (best_start == nullptr)
         {
             const size_t gap = static_cast<size_t>(region_end - cursor);
@@ -179,11 +187,12 @@ allocator_boundary_tags::allocator_boundary_tags(
             }
         }
     }
-    else
+    else // best_fit или worst_fit
     {
         void* prev = nullptr;
         void* cur = head;
         char* cursor = region_begin;
+        
         while (cur != nullptr)
         {
             char* cur_start = reinterpret_cast<char*>(cur);
@@ -219,6 +228,7 @@ allocator_boundary_tags::allocator_boundary_tags(
             prev = cur;
             cur = *reinterpret_cast<void**>(reinterpret_cast<char*>(cur) + sizeof(size_t) + sizeof(void*));
         }
+        
         if (region_end >= cursor)
         {
             const size_t gap = static_cast<size_t>(region_end - cursor);
@@ -248,79 +258,74 @@ allocator_boundary_tags::allocator_boundary_tags(
             }
         }
     }
-    if (best_start == nullptr)
-    {
-        throw std::bad_alloc();
-    }
+    
+    if (best_start == nullptr) throw std::bad_alloc();
+    
     void* block = best_start;
     size_t payload_size = size;
+    
+    // Корректировка размера, если остаток слишком мал
     if (best_gap > needed && best_gap - needed < kOccupiedBlockMetadataSize)
-    {
         payload_size = best_gap - kOccupiedBlockMetadataSize;
-    }
+    
+    // Заполнение заголовка блока
     *reinterpret_cast<size_t*>(reinterpret_cast<char*>(block)) = payload_size;
     *reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t)) = best_prev;
     *reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t) + sizeof(void*)) = best_next;
     *reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t) + sizeof(void*) * 2) = _trusted_memory;
+    
     if (best_prev != nullptr)
-    {
         *reinterpret_cast<void**>(reinterpret_cast<char*>(best_prev) + sizeof(size_t) + sizeof(void*)) = block;
-    }
     else
-    {
         *reinterpret_cast<void**>(base + first_occ_off) = block;
-    }
+    
     if (best_next != nullptr)
-    {
         *reinterpret_cast<void**>(reinterpret_cast<char*>(best_next) + sizeof(size_t)) = block;
-    }
+    
     return (reinterpret_cast<char*>(block) + kOccupiedBlockMetadataSize);
 }
 
-void allocator_boundary_tags::do_deallocate_sm(
-    void *at)
+// Освобождение памяти: удаление блока из списка занятых
+void allocator_boundary_tags::do_deallocate_sm(void *at)
 {
-    if (at == nullptr)
-    {
-        return;
-    }
+    if (at == nullptr) return;
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     auto* mtx = reinterpret_cast<std::mutex*>(base + mutex_off);
     std::lock_guard<std::mutex> lock(*mtx);
+    
     char* region_begin = base + kAllocatorMetadataSize;
     char* region_end = region_begin + *reinterpret_cast<size_t*>(base + managed_off);
     char* payload = reinterpret_cast<char*>(at);
+    
     if (payload < region_begin + kOccupiedBlockMetadataSize || payload >= region_end)
-    {
-        throw std::invalid_argument("");
-    }
+        throw std::invalid_argument("allocator_boundary_tags::do_deallocate_sm: pointer out of bounds");
+    
     void* block = payload - kOccupiedBlockMetadataSize;
+    
     if (*reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t) + sizeof(void*) * 2) != _trusted_memory)
-    {
-        throw std::invalid_argument("");
-    }
+        throw std::invalid_argument("allocator_boundary_tags::do_deallocate_sm: block does not belong to this allocator");
+    
     void* prev = *reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t));
     void* next = *reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t) + sizeof(void*));
+    
     if (prev != nullptr)
-    {
         *reinterpret_cast<void**>(reinterpret_cast<char*>(prev) + sizeof(size_t) + sizeof(void*)) = next;
-    }
     else
-    {
         *reinterpret_cast<void**>(base + first_occ_off) = next;
-    }
+    
     if (next != nullptr)
-    {
         *reinterpret_cast<void**>(reinterpret_cast<char*>(next) + sizeof(size_t)) = prev;
-    }
+    
+    // Очищаем заголовок блока
     *reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t) + sizeof(void*) * 2) = nullptr;
     *reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t)) = nullptr;
     *reinterpret_cast<void**>(reinterpret_cast<char*>(block) + sizeof(size_t) + sizeof(void*)) = nullptr;
     *reinterpret_cast<size_t*>(reinterpret_cast<char*>(block)) = 0;
 }
 
-inline void allocator_boundary_tags::set_fit_mode(
-    allocator_with_fit_mode::fit_mode mode)
+// Смена стратегии выделения
+inline void allocator_boundary_tags::set_fit_mode(allocator_with_fit_mode::fit_mode mode)
 {
     char* base = reinterpret_cast<char*>(_trusted_memory);
     auto* mtx = reinterpret_cast<std::mutex*>(base + mutex_off);
@@ -328,24 +333,21 @@ inline void allocator_boundary_tags::set_fit_mode(
     *reinterpret_cast<allocator_with_fit_mode::fit_mode*>(base + mode_off) = mode;
 }
 
+// Получение информации о всех блоках (для тестов)
 std::vector<allocator_test_utils::block_info> allocator_boundary_tags::get_blocks_info() const
 {
-    if (_trusted_memory == nullptr)
-    {
-        return {};
-    }
+    if (_trusted_memory == nullptr) return {};
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     auto* mtx = reinterpret_cast<std::mutex*>(base + mutex_off);
     std::lock_guard<std::mutex> lock(*mtx);
     return get_blocks_info_inner();
 }
 
+// Итераторы
 allocator_boundary_tags::boundary_iterator allocator_boundary_tags::begin() const noexcept
 {
-    if (_trusted_memory == nullptr)
-    {
-        return boundary_iterator();
-    }
+    if (_trusted_memory == nullptr) return boundary_iterator();
     return boundary_iterator(_trusted_memory);
 }
 
@@ -354,18 +356,18 @@ allocator_boundary_tags::boundary_iterator allocator_boundary_tags::end() const 
     return boundary_iterator();
 }
 
+// Внутренний метод получения информации о блоках
 std::vector<allocator_test_utils::block_info> allocator_boundary_tags::get_blocks_info_inner() const
 {
     std::vector<allocator_test_utils::block_info> result;
-    if (_trusted_memory == nullptr)
-    {
-        return result;
-    }
+    if (_trusted_memory == nullptr) return result;
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     char* region_begin = base + kAllocatorMetadataSize;
     char* region_end = region_begin + *reinterpret_cast<size_t*>(base + managed_off);
     void* cur_occ = *reinterpret_cast<void**>(base + first_occ_off);
     char* cursor = region_begin;
+    
     while (cursor < region_end)
     {
         if (cur_occ != nullptr && reinterpret_cast<char*>(cur_occ) == cursor)
@@ -377,14 +379,8 @@ std::vector<allocator_test_utils::block_info> allocator_boundary_tags::get_block
             continue;
         }
         char* free_end = region_end;
-        if (cur_occ != nullptr)
-        {
-            free_end = reinterpret_cast<char*>(cur_occ);
-        }
-        if (free_end <= cursor)
-        {
-            break;
-        }
+        if (cur_occ != nullptr) free_end = reinterpret_cast<char*>(cur_occ);
+        if (free_end <= cursor) break;
         const size_t free_bytes = static_cast<size_t>(free_end - cursor);
         result.push_back({free_bytes, false});
         cursor = free_end;
@@ -392,6 +388,7 @@ std::vector<allocator_test_utils::block_info> allocator_boundary_tags::get_block
     return result;
 }
 
+// Конструктор копирования
 allocator_boundary_tags::allocator_boundary_tags(const allocator_boundary_tags &other)
 {
     if (other._trusted_memory == nullptr)
@@ -399,17 +396,19 @@ allocator_boundary_tags::allocator_boundary_tags(const allocator_boundary_tags &
         _trusted_memory = nullptr;
         return;
     }
+    
     char* other_base = reinterpret_cast<char*>(other._trusted_memory);
     auto* other_mtx = reinterpret_cast<std::mutex*>(other_base + mutex_off);
     std::lock_guard<std::mutex> lock(*other_mtx);
+    
     auto* parent = *reinterpret_cast<std::pmr::memory_resource**>(other_base + parent_off);
     const auto mode = *reinterpret_cast<allocator_with_fit_mode::fit_mode*>(other_base + mode_off);
     const size_t managed = *reinterpret_cast<size_t*>(other_base + managed_off);
-    if (parent == nullptr)
-    {
-        parent = std::pmr::get_default_resource();
-    }
+    
+    if (parent == nullptr) parent = std::pmr::get_default_resource();
+    
     _trusted_memory = parent->allocate(kAllocatorMetadataSize + managed, alignof(std::max_align_t));
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     *reinterpret_cast<std::pmr::memory_resource**>(base + parent_off) = parent;
     *reinterpret_cast<allocator_with_fit_mode::fit_mode*>(base + mode_off) = mode;
@@ -418,22 +417,22 @@ allocator_boundary_tags::allocator_boundary_tags(const allocator_boundary_tags &
     *reinterpret_cast<void**>(base + first_occ_off) = nullptr;
 }
 
+// Оператор копирующего присваивания (copy-and-swap)
 allocator_boundary_tags &allocator_boundary_tags::operator=(const allocator_boundary_tags &other)
 {
-    if (this == &other)
-    {
-        return *this;
-    }
+    if (this == &other) return *this;
     allocator_boundary_tags tmp(other);
     *this = std::move(tmp);
     return *this;
 }
 
+// Сравнение аллокаторов: совместимы, если одного типа
 bool allocator_boundary_tags::do_is_equal(const std::pmr::memory_resource &other) const noexcept
 {
     return dynamic_cast<const allocator_boundary_tags*>(&other) != nullptr;
 }
 
+// boundary_iterator: сравнение
 bool allocator_boundary_tags::boundary_iterator::operator==(
         const allocator_boundary_tags::boundary_iterator &other) const noexcept
 {
@@ -446,16 +445,16 @@ bool allocator_boundary_tags::boundary_iterator::operator!=(
     return !(*this == other);
 }
 
+// Переход к следующему блоку
 allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_iterator::operator++() & noexcept
 {
-    if (_trusted_memory == nullptr || _occupied_ptr == nullptr)
-    {
-        return *this;
-    }
+    if (_trusted_memory == nullptr || _occupied_ptr == nullptr) return *this;
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     char* region_begin = base + kAllocatorMetadataSize;
     char* region_end = region_begin + *reinterpret_cast<size_t*>(base + managed_off);
     char* cur_start = reinterpret_cast<char*>(_occupied_ptr);
+    
     if (_occupied)
     {
         char* next_start = const_cast<char*>((reinterpret_cast<char*>(_occupied_ptr) + kOccupiedBlockMetadataSize + *reinterpret_cast<size_t*>(reinterpret_cast<char*>(_occupied_ptr))));
@@ -467,9 +466,7 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
         }
         void* cur = *reinterpret_cast<void**>(base + first_occ_off);
         while (cur != nullptr && cur != _occupied_ptr)
-        {
             cur = *reinterpret_cast<void**>(reinterpret_cast<char*>(cur) + sizeof(size_t) + sizeof(void*));
-        }
         void* occ_next = cur == nullptr ? nullptr : *reinterpret_cast<void**>(reinterpret_cast<char*>(cur) + sizeof(size_t) + sizeof(void*));
         if (occ_next != nullptr && reinterpret_cast<char*>(occ_next) == next_start)
         {
@@ -481,11 +478,11 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
         _occupied = false;
         return *this;
     }
+    
     void* cur = *reinterpret_cast<void**>(base + first_occ_off);
     while (cur != nullptr && reinterpret_cast<char*>(cur) <= cur_start)
-    {
         cur = *reinterpret_cast<void**>(reinterpret_cast<char*>(cur) + sizeof(size_t) + sizeof(void*));
-    }
+    
     if (cur == nullptr)
     {
         _occupied_ptr = nullptr;
@@ -497,22 +494,19 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
     return *this;
 }
 
+// Переход к предыдущему блоку
 allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_iterator::operator--() & noexcept
 {
-    if (_trusted_memory == nullptr)
-    {
-        return *this;
-    }
+    if (_trusted_memory == nullptr) return *this;
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     char* region_begin = base + kAllocatorMetadataSize;
     char* region_end = region_begin + *reinterpret_cast<size_t*>(base + managed_off);
     void* head = *reinterpret_cast<void**>(base + first_occ_off);
+    
     if (_occupied_ptr == nullptr)
     {
-        if (region_begin >= region_end)
-        {
-            return *this;
-        }
+        if (region_begin >= region_end) return *this;
         if (head == nullptr)
         {
             _occupied_ptr = region_begin;
@@ -521,9 +515,7 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
         }
         void* tail = head;
         while (*reinterpret_cast<void**>(reinterpret_cast<char*>(tail) + sizeof(size_t) + sizeof(void*)) != nullptr)
-        {
             tail = *reinterpret_cast<void**>(reinterpret_cast<char*>(tail) + sizeof(size_t) + sizeof(void*));
-        }
         char* tail_end = const_cast<char*>((reinterpret_cast<char*>(tail) + kOccupiedBlockMetadataSize + *reinterpret_cast<size_t*>(reinterpret_cast<char*>(tail))));
         if (tail_end < region_end)
         {
@@ -535,11 +527,10 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
         _occupied = true;
         return *this;
     }
+    
     char* cur_start = reinterpret_cast<char*>(_occupied_ptr);
-    if (cur_start <= region_begin)
-    {
-        return *this;
-    }
+    if (cur_start <= region_begin) return *this;
+    
     if (_occupied)
     {
         void* prev_occ = *reinterpret_cast<void**>(reinterpret_cast<char*>(_occupied_ptr) + sizeof(size_t));
@@ -563,6 +554,7 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
         _occupied = false;
         return *this;
     }
+    
     void* cur = head;
     void* prev_occ = nullptr;
     while (cur != nullptr && reinterpret_cast<char*>(cur) < cur_start)
@@ -570,6 +562,7 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
         prev_occ = cur;
         cur = *reinterpret_cast<void**>(reinterpret_cast<char*>(cur) + sizeof(size_t) + sizeof(void*));
     }
+    
     if (prev_occ == nullptr)
     {
         _occupied_ptr = region_begin;
@@ -581,6 +574,7 @@ allocator_boundary_tags::boundary_iterator &allocator_boundary_tags::boundary_it
     return *this;
 }
 
+// Постфиксные инкремент/декремент
 allocator_boundary_tags::boundary_iterator allocator_boundary_tags::boundary_iterator::operator++(int n)
 {
     (void)n;
@@ -597,51 +591,43 @@ allocator_boundary_tags::boundary_iterator allocator_boundary_tags::boundary_ite
     return tmp;
 }
 
+// Размер текущего блока
 size_t allocator_boundary_tags::boundary_iterator::size() const noexcept
 {
-    if (_trusted_memory == nullptr || _occupied_ptr == nullptr)
-    {
-        return 0;
-    }
+    if (_trusted_memory == nullptr || _occupied_ptr == nullptr) return 0;
+    
     char* base = reinterpret_cast<char*>(_trusted_memory);
     char* region_begin = base + kAllocatorMetadataSize;
     char* region_end = region_begin + *reinterpret_cast<size_t*>(base + managed_off);
+    
     if (_occupied)
-    {
         return kOccupiedBlockMetadataSize + *reinterpret_cast<size_t*>(reinterpret_cast<char*>(_occupied_ptr));
-    }
+    
     char* cur = reinterpret_cast<char*>(_occupied_ptr);
     void* occ = *reinterpret_cast<void**>(base + first_occ_off);
     while (occ != nullptr && reinterpret_cast<char*>(occ) <= cur)
-    {
         occ = *reinterpret_cast<void**>(reinterpret_cast<char*>(occ) + sizeof(size_t) + sizeof(void*));
-    }
+    
     char* end = occ == nullptr ? region_end : reinterpret_cast<char*>(occ);
-    if (end <= cur)
-    {
-        return 0;
-    }
+    if (end <= cur) return 0;
     return static_cast<size_t>(end - cur);
 }
 
+// Занят ли текущий блок
 bool allocator_boundary_tags::boundary_iterator::occupied() const noexcept
 {
     return _occupied_ptr != nullptr && _occupied;
 }
 
+// Получение указателя на данные (для занятых) или на начало блока (для свободных)
 void* allocator_boundary_tags::boundary_iterator::operator*() const noexcept
 {
-    if (_occupied_ptr == nullptr)
-    {
-        return nullptr;
-    }
-    if (_occupied)
-    {
-        return reinterpret_cast<char*>(_occupied_ptr) + kOccupiedBlockMetadataSize;
-    }
+    if (_occupied_ptr == nullptr) return nullptr;
+    if (_occupied) return reinterpret_cast<char*>(_occupied_ptr) + kOccupiedBlockMetadataSize;
     return _occupied_ptr;
 }
 
+// Конструкторы итератора
 allocator_boundary_tags::boundary_iterator::boundary_iterator()
 {
     _occupied_ptr = nullptr;
@@ -658,15 +644,18 @@ allocator_boundary_tags::boundary_iterator::boundary_iterator(void *trusted)
         _occupied = false;
         return;
     }
+    
     char* base = reinterpret_cast<char*>(trusted);
     char* region_begin = base + kAllocatorMetadataSize;
     char* region_end = region_begin + *reinterpret_cast<size_t*>(base + managed_off);
+    
     if (region_begin >= region_end)
     {
         _occupied_ptr = nullptr;
         _occupied = false;
         return;
     }
+    
     void* head = *reinterpret_cast<void**>(base + first_occ_off);
     if (head == nullptr)
     {
@@ -674,12 +663,14 @@ allocator_boundary_tags::boundary_iterator::boundary_iterator(void *trusted)
         _occupied = false;
         return;
     }
+    
     if (reinterpret_cast<char*>(head) == region_begin)
     {
         _occupied_ptr = head;
         _occupied = true;
         return;
     }
+    
     _occupied_ptr = region_begin;
     _occupied = false;
 }
