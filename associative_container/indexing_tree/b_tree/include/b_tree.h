@@ -11,93 +11,113 @@
 #include <associative_container.h>
 #include <initializer_list>
 
+// Шаблон B-дерева: tkey - тип ключа, tvalue - тип значения, compare - компаратор, t - степень дерева
 template <typename tkey, typename tvalue, comparator<tkey> compare = std::less<tkey>, std::size_t t = 5>
-class B_tree final : private compare // EBCO
+class B_tree final : private compare
 {
 public:
-
     using tree_data_type = std::pair<tkey, tvalue>;
     using tree_data_type_const = std::pair<const tkey, tvalue>;
     using value_type = tree_data_type_const;
 
 private:
-
+    // Минимальное и максимальное количество ключей в узле (зависит от степени t)
     static constexpr const size_t minimum_keys_in_node = t - 1;
     static constexpr const size_t maximum_keys_in_node = 2 * t - 1;
 
-    // region comparators declaration
-
+    // Сравнивает два ключа через компаратор
     inline bool compare_keys(const tkey& lhs, const tkey& rhs) const;
+    // Сравнивает две пары (по ключам)
     inline bool compare_pairs(const tree_data_type& lhs, const tree_data_type& rhs) const;
 
-    // endregion comparators declaration
-
-
+    // Структура узла B-дерева
     struct btree_node
     {
+        // Массив ключей (размер на стеке, +1 для временного переполнения)
         boost::container::static_vector<tree_data_type, maximum_keys_in_node + 1> _keys;
+        // Массив указателей на детей (размер на стеке, +2 для временного переполнения)
         boost::container::static_vector<btree_node*, maximum_keys_in_node + 2> _pointers;
         btree_node() noexcept;
     };
 
-    pp_allocator<value_type> _allocator;
-    btree_node* _root;
-    size_t _size;
+    pp_allocator<value_type> _allocator;  // Аллокатор для узлов
+    btree_node* _root;                    // Корень дерева
+    size_t _size;                         // Количество элементов
 
+    // Вспомогательные методы
     pp_allocator<value_type> get_allocator() const noexcept;
-
-    btree_node* create_node();
-    void destroy_node(btree_node* node) noexcept;
-    void clear_node(btree_node* node) noexcept;
-    bool is_leaf(const btree_node* node) const noexcept;
+    btree_node* create_node();                         // Создать узел
+    void destroy_node(btree_node* node) noexcept;      // Уничтожить узел
+    void clear_node(btree_node* node) noexcept;        // Очистить поддерево
+    bool is_leaf(const btree_node* node) const noexcept; // Проверка: лист? (нет детей)
+    
+    // Шаг 1: найти позицию ключа в узле (возвращает индекс, found=true если найден)
     size_t find_key_index(const btree_node* node, const tkey& key, bool& found) const;
+    
+    // Шаг 2: разбить переполненного ребёнка (когда у него 2t ключей)
     void split_child(btree_node* parent, size_t child_index);
+    
+    // Шаг 3: вставить ключ в непереполненный узел
     void insert_non_full(btree_node* node, tree_data_type&& data, btree_node** out_node, size_t* out_index, bool& inserted);
+    
+    // Шаг 4: удалить ключ (внутренний метод)
     bool erase_internal(btree_node* node, const tkey& key);
+    
+    // Шаг 5: объединить двух детей (когда оба имеют минимальное количество ключей)
     void merge_children(btree_node* node, size_t index);
+    
+    // Шаг 6: получить предшественника (максимум в левом поддереве)
     tree_data_type get_predecessor(btree_node* node, size_t index);
+    
+    // Шаг 7: получить последователя (минимум в правом поддереве)
     tree_data_type get_successor(btree_node* node, size_t index);
 
 public:
 
-    // region constructors declaration
+    // КОНСТРУКТОРЫ
 
+    // 1. Конструктор по умолчанию: создаёт пустое дерево
     explicit B_tree(const compare& cmp = compare(), pp_allocator<value_type> = pp_allocator<value_type>());
 
+    // 2. Конструктор с аллокатором
     explicit B_tree(pp_allocator<value_type> alloc, const compare& comp = compare());
 
+    // 3. Конструктор из диапазона итераторов
     template<input_iterator_for_pair<tkey, tvalue> iterator>
     explicit B_tree(iterator begin, iterator end, const compare& cmp = compare(), pp_allocator<value_type> = pp_allocator<value_type>());
 
+    // 4. Конструктор из initializer_list
     B_tree(std::initializer_list<std::pair<tkey, tvalue>> data, const compare& cmp = compare(), pp_allocator<value_type> = pp_allocator<value_type>());
 
-    // endregion constructors declaration
+    // ПРАВИЛО ПЯТИ
 
-    // region five declaration
-
+    // 5. Конструктор копирования: глубокое копирование дерева
     B_tree(const B_tree& other);
 
+    // 6. Конструктор перемещения: забирает ресурсы у другого дерева
     B_tree(B_tree&& other) noexcept;
 
+    // 7. Оператор присваивания копированием
     B_tree& operator=(const B_tree& other);
 
+    // 8. Оператор присваивания перемещением
     B_tree& operator=(B_tree&& other) noexcept;
 
+    // 9. Деструктор: очищает всё дерево
     ~B_tree() noexcept;
 
-    // endregion five declaration
-
-    // region iterators declaration
+    // ИТЕРАТОРЫ
 
     class btree_iterator;
     class btree_reverse_iterator;
     class btree_const_iterator;
     class btree_const_reverse_iterator;
 
+    // Обычный итератор (прямой обход)
     class btree_iterator final
     {
-        std::stack<std::pair<btree_node**, size_t>> _path;
-        size_t _index;
+        std::stack<std::pair<btree_node**, size_t>> _path;  // Стек: (указатель на узел, индекс в родителе)
+        size_t _index;  // Индекс текущего ключа в узле
 
     public:
         using value_type = tree_data_type_const;
@@ -112,34 +132,32 @@ public:
         friend class btree_const_iterator;
         friend class btree_const_reverse_iterator;
 
-        reference operator*() const noexcept;
-        pointer operator->() const noexcept;
+        reference operator*() const noexcept;      // Шаг: получить текущий ключ
+        pointer operator->() const noexcept;       // Шаг: доступ к полям ключа
 
-        self& operator++();
-        self operator++(int);
-
-        self& operator--();
-        self operator--(int);
+        self& operator++();   // Шаг: перейти к следующему ключу
+        self operator++(int); // Шаг: постфиксный ++
+        self& operator--();   // Шаг: перейти к предыдущему ключу
+        self operator--(int); // Шаг: постфиксный --
 
         bool operator==(const self& other) const noexcept;
         bool operator!=(const self& other) const noexcept;
 
-        size_t depth() const noexcept;
-        size_t current_node_keys_count() const noexcept;
-        bool is_terminate_node() const noexcept;
-        size_t index() const noexcept;
+        size_t depth() const noexcept;                     // Глубина в дереве
+        size_t current_node_keys_count() const noexcept;   // Количество ключей в текущем узле
+        bool is_terminate_node() const noexcept;           // Дошли ли до конца
+        size_t index() const noexcept;                     // Индекс текущего ключа
 
         explicit btree_iterator(const std::stack<std::pair<btree_node**, size_t>>& path = std::stack<std::pair<btree_node**, size_t>>(), size_t index = 0);
-
     };
 
+    // Константный итератор (только для чтения)
     class btree_const_iterator final
     {
         std::stack<std::pair<btree_node* const*, size_t>> _path;
         size_t _index;
 
     public:
-
         using value_type = tree_data_type_const;
         using reference = const value_type&;
         using pointer = const value_type*;
@@ -159,7 +177,6 @@ public:
 
         self& operator++();
         self operator++(int);
-
         self& operator--();
         self operator--(int);
 
@@ -174,13 +191,13 @@ public:
         explicit btree_const_iterator(const std::stack<std::pair<btree_node* const*, size_t>>& path = std::stack<std::pair<btree_node* const*, size_t>>(), size_t index = 0);
     };
 
+    // Обратный итератор
     class btree_reverse_iterator final
     {
         std::stack<std::pair<btree_node**, size_t>> _path;
         size_t _index;
 
     public:
-
         using value_type = tree_data_type_const;
         using reference = value_type&;
         using pointer = value_type*;
@@ -201,7 +218,6 @@ public:
 
         self& operator++();
         self operator++(int);
-
         self& operator--();
         self operator--(int);
 
@@ -216,13 +232,13 @@ public:
         explicit btree_reverse_iterator(const std::stack<std::pair<btree_node**, size_t>>& path = std::stack<std::pair<btree_node**, size_t>>(), size_t index = 0);
     };
 
+    // Константный обратный итератор
     class btree_const_reverse_iterator final
     {
         std::stack<std::pair<btree_node* const*, size_t>> _path;
         size_t _index;
 
     public:
-
         using value_type = tree_data_type_const;
         using reference = const value_type&;
         using pointer = const value_type*;
@@ -243,7 +259,6 @@ public:
 
         self& operator++();
         self operator++(int);
-
         self& operator--();
         self operator--(int);
 
@@ -263,27 +278,20 @@ public:
     friend class btree_reverse_iterator;
     friend class btree_const_reverse_iterator;
 
-    // endregion iterators declaration
+    // ДОСТУП К ЭЛЕМЕНТАМ
 
-    // region element access declaration
-
-    /*
-     * Returns a reference to the mapped value of the element with specified key. If no such element exists, an exception of type std::out_of_range is thrown.
-     */
+    // Шаг: получить значение по ключу (бросает out_of_range если нет)
     tvalue& at(const tkey&);
     const tvalue& at(const tkey&) const;
 
-    /*
-     * If key not exists, makes default initialization of value
-     */
+    // Шаг: получить значение по ключу (создаёт элемент если нет)
     tvalue& operator[](const tkey& key);
     tvalue& operator[](tkey&& key);
 
-    // endregion element access declaration
-    // region iterator begins declaration
+    // НАЧАЛЬНЫЕ ИТЕРАТОРЫ
 
-    btree_iterator begin();
-    btree_iterator end();
+    btree_iterator begin();   // Шаг: итератор на первый (самый левый) ключ
+    btree_iterator end();     // Шаг: итератор на конец
 
     btree_const_iterator begin() const;
     btree_const_iterator end() const;
@@ -291,8 +299,8 @@ public:
     btree_const_iterator cbegin() const;
     btree_const_iterator cend() const;
 
-    btree_reverse_iterator rbegin();
-    btree_reverse_iterator rend();
+    btree_reverse_iterator rbegin();   // Шаг: обратный итератор на последний ключ
+    btree_reverse_iterator rend();     // Шаг: обратный итератор на конец
 
     btree_const_reverse_iterator rbegin() const;
     btree_const_reverse_iterator rend() const;
@@ -300,75 +308,65 @@ public:
     btree_const_reverse_iterator crbegin() const;
     btree_const_reverse_iterator crend() const;
 
-    // endregion iterator begins declaration
+    // ПОИСК
 
-    // region lookup declaration
+    size_t size() const noexcept;      // Шаг: количество элементов
+    bool empty() const noexcept;       // Шаг: пусто ли дерево
 
-    size_t size() const noexcept;
-    bool empty() const noexcept;
-
-    /*
-     * Returns end() if not exist
-     */
-
-    btree_iterator find(const tkey& key);
+    btree_iterator find(const tkey& key);           // Шаг: найти ключ (возвращает end() если нет)
     btree_const_iterator find(const tkey& key) const;
 
-    btree_iterator lower_bound(const tkey& key);
+    btree_iterator lower_bound(const tkey& key);    // Шаг: первый элемент >= key
     btree_const_iterator lower_bound(const tkey& key) const;
 
-    btree_iterator upper_bound(const tkey& key);
+    btree_iterator upper_bound(const tkey& key);    // Шаг: первый элемент > key
     btree_const_iterator upper_bound(const tkey& key) const;
 
-    bool contains(const tkey& key) const;
+    bool contains(const tkey& key) const;           // Шаг: проверка существования
 
-    // endregion lookup declaration
+    // МОДИФИКАЦИЯ
 
-    // region modifiers declaration
+    void clear() noexcept;   // Шаг: удалить все элементы
 
-    void clear() noexcept;
-
-    /*
-     * Does nothing if key exists, delegates to emplace.
-     * Second return value is true, when inserted
-     */
+    // Шаг: вставка пары (возвращает итератор и флаг успеха)
     std::pair<btree_iterator, bool> insert(const tree_data_type& data);
     std::pair<btree_iterator, bool> insert(tree_data_type&& data);
 
+    // Шаг: конструирование и вставка
     template <typename ...Args>
     std::pair<btree_iterator, bool> emplace(Args&&... args);
 
-    /*
-     * Updates value if key exists, delegates to emplace.
-     */
+    // Шаг: вставка или обновление значения
     btree_iterator insert_or_assign(const tree_data_type& data);
     btree_iterator insert_or_assign(tree_data_type&& data);
 
     template <typename ...Args>
     btree_iterator emplace_or_assign(Args&&... args);
 
-    /*
-     * Return iterator to node next ro removed or end() if key not exists
-     */
+    // Шаг: удаление по итератору
     btree_iterator erase(btree_iterator pos);
     btree_iterator erase(btree_const_iterator pos);
 
+    // Шаг: удаление диапазона
     btree_iterator erase(btree_iterator beg, btree_iterator en);
     btree_iterator erase(btree_const_iterator beg, btree_const_iterator en);
 
-
+    // Шаг: удаление по ключу (возвращает следующий итератор)
     btree_iterator erase(const tkey& key);
-
-    // endregion modifiers declaration
 };
 
+// CTAD: вывод типа из итератора
 template<std::input_iterator iterator, comparator<typename std::iterator_traits<iterator>::value_type::first_type> compare = std::less<typename std::iterator_traits<iterator>::value_type::first_type>,
         std::size_t t = 5, typename U>
 B_tree(iterator begin, iterator end, const compare &cmp = compare(), pp_allocator<U> = pp_allocator<U>()) -> B_tree<typename std::iterator_traits<iterator>::value_type::first_type, typename std::iterator_traits<iterator>::value_type::second_type, compare, t>;
 
+// CTAD: вывод типа из initializer_list
 template<typename tkey, typename tvalue, comparator<tkey> compare = std::less<tkey>, std::size_t t = 5, typename U>
 B_tree(std::initializer_list<std::pair<tkey, tvalue>> data, const compare &cmp = compare(), pp_allocator<U> = pp_allocator<U>()) -> B_tree<tkey, tvalue, compare, t>;
 
+// РЕАЛИЗАЦИЯ МЕТОДОВ
+
+// Сравнение пар (сравнивает ключи)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 bool B_tree<tkey, tvalue, compare, t>::compare_pairs(const B_tree::tree_data_type &lhs,
                                                      const B_tree::tree_data_type &rhs) const
@@ -376,13 +374,14 @@ bool B_tree<tkey, tvalue, compare, t>::compare_pairs(const B_tree::tree_data_typ
     return compare_keys(lhs.first, rhs.first);
 }
 
+// Сравнение ключей через компаратор
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 bool B_tree<tkey, tvalue, compare, t>::compare_keys(const tkey &lhs, const tkey &rhs) const
 {
     return compare::operator()(lhs, rhs);
 }
 
-
+// Конструктор узла B-дерева: очищает векторы
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::btree_node::btree_node() noexcept
 {
@@ -390,18 +389,21 @@ B_tree<tkey, tvalue, compare, t>::btree_node::btree_node() noexcept
     _pointers.clear();
 }
 
+// Возвращает копию аллокатора
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 pp_allocator<typename B_tree<tkey, tvalue, compare, t>::value_type> B_tree<tkey, tvalue, compare, t>::get_allocator() const noexcept
 {
     return _allocator;
 }
 
+// Создание нового узла через аллокатор (placement new)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_node* B_tree<tkey, tvalue, compare, t>::create_node()
 {
     return _allocator.template new_object<btree_node>();
 }
 
+// Уничтожение узла через аллокатор (явный вызов деструктора + освобождение памяти)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 void B_tree<tkey, tvalue, compare, t>::destroy_node(btree_node* node) noexcept
 {
@@ -411,24 +413,32 @@ void B_tree<tkey, tvalue, compare, t>::destroy_node(btree_node* node) noexcept
     _allocator.template delete_object(node);
 }
 
+// Рекурсивное удаление всего поддерева
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 void B_tree<tkey, tvalue, compare, t>::clear_node(btree_node* node) noexcept
 {
     if (node == nullptr) {
         return;
     }
+    // Шаг 1: рекурсивно очищаем всех детей
     for (auto child : node->_pointers) {
         clear_node(child);
     }
+    // Шаг 2: уничтожаем текущий узел
     destroy_node(node);
 }
 
+// Проверка: является ли узел листом (нет детей)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 bool B_tree<tkey, tvalue, compare, t>::is_leaf(const btree_node* node) const noexcept
 {
     return node == nullptr || node->_pointers.empty();
 }
 
+// Функция поиска позиции ключа в узле
+// Шаг 1: проходим по ключам, пока они меньше искомого
+// Шаг 2: если нашли точное совпадение - found = true
+// Шаг 3: возвращаем индекс (куда вставлять или где найден)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 size_t B_tree<tkey, tvalue, compare, t>::find_key_index(const btree_node* node, const tkey& key, bool& found) const
 {
@@ -440,37 +450,56 @@ size_t B_tree<tkey, tvalue, compare, t>::find_key_index(const btree_node* node, 
     return i;
 }
 
+// Разбиение переполненного ребёнка (когда у него 2t ключей)
+// Шаг 1: берём переполненного ребёнка full
+// Шаг 2: создаём правого брата right
+// Шаг 3: средний ключ (индекс t) поднимаем в родителя
+// Шаг 4: перемещаем правую половину ключей из full в right
+// Шаг 5: перемещаем правую половину детей из full в right
+// Шаг 6: вставляем средний ключ в родителя
+// Шаг 7: вставляем right в список детей родителя
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 void B_tree<tkey, tvalue, compare, t>::split_child(btree_node* parent, size_t child_index)
 {
     btree_node* full = parent->_pointers[child_index];
     btree_node* right = create_node();
     tree_data_type middle = std::move(full->_keys[t]);
+    
     for (size_t i = t + 1; i < full->_keys.size(); ++i) {
         right->_keys.push_back(std::move(full->_keys[i]));
     }
     full->_keys.erase(full->_keys.begin() + static_cast<ptrdiff_t>(t), full->_keys.end());
+    
     if (!full->_pointers.empty()) {
         for (size_t i = t + 1; i < full->_pointers.size(); ++i) {
             right->_pointers.push_back(full->_pointers[i]);
         }
         full->_pointers.erase(full->_pointers.begin() + static_cast<ptrdiff_t>(t + 1), full->_pointers.end());
     }
+    
     parent->_keys.insert(parent->_keys.begin() + static_cast<ptrdiff_t>(child_index), std::move(middle));
     parent->_pointers.insert(parent->_pointers.begin() + static_cast<ptrdiff_t>(child_index + 1), right);
 }
 
+// Вставка в непереполненный узел (рекурсивная)
+// Шаг 1: ищем позицию для вставки
+// Шаг 2: если ключ уже есть - обновляем значение и выходим
+// Шаг 3: если узел лист - вставляем ключ
+// Шаг 4: иначе рекурсивно вставляем в ребёнка
+// Шаг 5: если ребёнок переполнился - разбиваем его
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 void B_tree<tkey, tvalue, compare, t>::insert_non_full(btree_node* node, tree_data_type&& data, btree_node** out_node, size_t* out_index, bool& inserted)
 {
     bool found = false;
     size_t idx = find_key_index(node, data.first, found);
+    
     if (found) {
         *out_node = node;
         *out_index = idx;
         inserted = false;
         return;
     }
+    
     if (is_leaf(node)) {
         node->_keys.insert(node->_keys.begin() + static_cast<ptrdiff_t>(idx), std::move(data));
         *out_node = node;
@@ -478,12 +507,18 @@ void B_tree<tkey, tvalue, compare, t>::insert_non_full(btree_node* node, tree_da
         inserted = true;
         return;
     }
+    
     insert_non_full(node->_pointers[idx], std::move(data), out_node, out_index, inserted);
+    
     if (node->_pointers[idx]->_keys.size() == maximum_keys_in_node + 1) {
         split_child(node, idx);
     }
 }
 
+// Получение предшественника (максимальный ключ в левом поддереве)
+// Шаг 1: идём в левого ребёнка (индекс index)
+// Шаг 2: затем всё время вправо (последний ребёнок)
+// Шаг 3: возвращаем последний ключ
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::tree_data_type B_tree<tkey, tvalue, compare, t>::get_predecessor(btree_node* node, size_t index)
 {
@@ -494,6 +529,10 @@ typename B_tree<tkey, tvalue, compare, t>::tree_data_type B_tree<tkey, tvalue, c
     return cur->_keys.back();
 }
 
+// Получение последователя (минимальный ключ в правом поддереве)
+// Шаг 1: идём в правого ребёнка (индекс index+1)
+// Шаг 2: затем всё время влево (первый ребёнок)
+// Шаг 3: возвращаем первый ключ
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::tree_data_type B_tree<tkey, tvalue, compare, t>::get_successor(btree_node* node, size_t index)
 {
@@ -504,55 +543,88 @@ typename B_tree<tkey, tvalue, compare, t>::tree_data_type B_tree<tkey, tvalue, c
     return cur->_keys.front();
 }
 
+// Объединение двух детей (когда оба имеют минимальное количество ключей)
+// Шаг 1: берём левого и правого ребёнка
+// Шаг 2: добавляем ключ из родителя в левый узел
+// Шаг 3: добавляем все ключи из правого узла в левый
+// Шаг 4: добавляем всех детей правого узла в левый
+// Шаг 5: удаляем ключ из родителя и правый узел
+// Шаг 6: уничтожаем правый узел
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 void B_tree<tkey, tvalue, compare, t>::merge_children(btree_node* node, size_t index)
 {
     btree_node* left = node->_pointers[index];
     btree_node* right = node->_pointers[index + 1];
+    
     left->_keys.push_back(std::move(node->_keys[index]));
+    
     for (size_t i = 0; i < right->_keys.size(); ++i) {
         left->_keys.push_back(std::move(right->_keys[i]));
     }
+    
     if (!right->_pointers.empty()) {
         for (size_t i = 0; i < right->_pointers.size(); ++i) {
             left->_pointers.push_back(right->_pointers[i]);
         }
     }
+    
     node->_keys.erase(node->_keys.begin() + static_cast<ptrdiff_t>(index));
     node->_pointers.erase(node->_pointers.begin() + static_cast<ptrdiff_t>(index + 1));
+    
     destroy_node(right);
 }
 
+// Внутренний метод удаления ключа (рекурсивный)
+// СЛУЧАЙ 1: ключ найден
+//   1А: в листе - просто удаляем
+//   1Б: во внутреннем узле
+//       1Б(i): если у левого ребёнка >= t ключей - берём предшественника
+//       1Б(ii): если у правого ребёнка >= t ключей - берём последователя
+//       1Б(iii): иначе объединяем детей и удаляем
+// СЛУЧАЙ 2: ключ не найден
+//   2А: если у ребёнка минимальное количество ключей - перебалансируем
+//       2А(i): берём ключ у левого брата
+//       2А(ii): берём ключ у правого брата
+//       2А(iii): объединяем с братом
+//   2Б: рекурсивно удаляем из ребёнка
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 bool B_tree<tkey, tvalue, compare, t>::erase_internal(btree_node* node, const tkey& key)
 {
     bool found = false;
     size_t idx = find_key_index(node, key, found);
+    
     if (found) {
         if (is_leaf(node)) {
             node->_keys.erase(node->_keys.begin() + static_cast<ptrdiff_t>(idx));
             --_size;
             return true;
         }
+        
         btree_node* left = node->_pointers[idx];
         btree_node* right = node->_pointers[idx + 1];
+        
         if (left->_keys.size() >= t) {
             tree_data_type pred = get_predecessor(node, idx);
             node->_keys[idx] = pred;
             return erase_internal(left, pred.first);
         }
+        
         if (right->_keys.size() >= t) {
             tree_data_type succ = get_successor(node, idx);
             node->_keys[idx] = succ;
             return erase_internal(right, succ.first);
         }
+        
         merge_children(node, idx);
         return erase_internal(left, key);
     }
+    
     if (is_leaf(node)) {
         return false;
     }
+    
     btree_node* child = node->_pointers[idx];
+    
     if (child->_keys.size() == minimum_keys_in_node) {
         if (idx > 0 && node->_pointers[idx - 1]->_keys.size() >= t) {
             btree_node* left = node->_pointers[idx - 1];
@@ -563,7 +635,8 @@ bool B_tree<tkey, tvalue, compare, t>::erase_internal(btree_node* node, const tk
                 child->_pointers.insert(child->_pointers.begin(), left->_pointers.back());
                 left->_pointers.pop_back();
             }
-        } else if (idx + 1 < node->_pointers.size() && node->_pointers[idx + 1]->_keys.size() >= t) {
+        }
+        else if (idx + 1 < node->_pointers.size() && node->_pointers[idx + 1]->_keys.size() >= t) {
             btree_node* right = node->_pointers[idx + 1];
             child->_keys.push_back(std::move(node->_keys[idx]));
             node->_keys[idx] = std::move(right->_keys.front());
@@ -572,7 +645,8 @@ bool B_tree<tkey, tvalue, compare, t>::erase_internal(btree_node* node, const tk
                 child->_pointers.push_back(right->_pointers.front());
                 right->_pointers.erase(right->_pointers.begin());
             }
-        } else {
+        }
+        else {
             if (idx + 1 < node->_pointers.size()) {
                 merge_children(node, idx);
             } else {
@@ -581,11 +655,11 @@ bool B_tree<tkey, tvalue, compare, t>::erase_internal(btree_node* node, const tk
             }
         }
     }
+    
     return erase_internal(child, key);
 }
 
-// region constructors implementation
-
+// Конструктор по умолчанию: создаёт пустое дерево
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::B_tree(
         const compare& cmp,
@@ -597,9 +671,10 @@ B_tree<tkey, tvalue, compare, t>::B_tree(
     _size = 0;
 }
 
+// Конструктор с аллокатором
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::B_tree(
-        pp_allocator<value_type> alloc,\
+        pp_allocator<value_type> alloc,
         const compare& comp)
 {
     compare::operator=(comp);
@@ -608,6 +683,7 @@ B_tree<tkey, tvalue, compare, t>::B_tree(
     _size = 0;
 }
 
+// Конструктор из диапазона итераторов: последовательно вставляет элементы
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 template<input_iterator_for_pair<tkey, tvalue> iterator>
 B_tree<tkey, tvalue, compare, t>::B_tree(
@@ -625,6 +701,7 @@ B_tree<tkey, tvalue, compare, t>::B_tree(
     }
 }
 
+// Конструктор из initializer_list
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::B_tree(
         std::initializer_list<std::pair<tkey, tvalue>> data,
@@ -640,16 +717,17 @@ B_tree<tkey, tvalue, compare, t>::B_tree(
     }
 }
 
-// endregion constructors implementation
-
-// region five implementation
-
+// Деструктор: очищает всё дерево
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::~B_tree() noexcept
 {
     clear();
 }
 
+// Конструктор копирования: глубокое копирование дерева
+// Шаг 1: копируем компаратор и аллокатор
+// Шаг 2: создаём новый корень
+// Шаг 3: DFS обход для копирования всех узлов
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::B_tree(const B_tree& other)
 {
@@ -679,6 +757,7 @@ B_tree<tkey, tvalue, compare, t>::B_tree(const B_tree& other)
     }
 }
 
+// Оператор присваивания копированием (copy-and-swap)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>& B_tree<tkey, tvalue, compare, t>::operator=(const B_tree& other)
 {
@@ -713,6 +792,7 @@ B_tree<tkey, tvalue, compare, t>& B_tree<tkey, tvalue, compare, t>::operator=(co
     return *this;
 }
 
+// Конструктор перемещения: забираем ресурсы у другого дерева
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::B_tree(B_tree&& other) noexcept
 {
@@ -724,6 +804,7 @@ B_tree<tkey, tvalue, compare, t>::B_tree(B_tree&& other) noexcept
     other._size = 0;
 }
 
+// Оператор присваивания перемещением
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>& B_tree<tkey, tvalue, compare, t>::operator=(B_tree&& other) noexcept
 {
@@ -740,10 +821,7 @@ B_tree<tkey, tvalue, compare, t>& B_tree<tkey, tvalue, compare, t>::operator=(B_
     return *this;
 }
 
-// endregion five implementation
-
-// region iterators implementation
-
+// Конструктор итератора
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::btree_iterator::btree_iterator(
         const std::stack<std::pair<btree_node**, size_t>>& path, size_t index)
@@ -752,6 +830,7 @@ B_tree<tkey, tvalue, compare, t>::btree_iterator::btree_iterator(
     _index = index;
 }
 
+// Разыменование итератора: возвращает текущий ключ
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator::reference
 B_tree<tkey, tvalue, compare, t>::btree_iterator::operator*() const noexcept
@@ -760,6 +839,7 @@ B_tree<tkey, tvalue, compare, t>::btree_iterator::operator*() const noexcept
     return *reinterpret_cast<value_type*>(&node->_keys[_index]);
 }
 
+// Доступ через ->
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator::pointer
 B_tree<tkey, tvalue, compare, t>::btree_iterator::operator->() const noexcept
@@ -768,6 +848,10 @@ B_tree<tkey, tvalue, compare, t>::btree_iterator::operator->() const noexcept
     return reinterpret_cast<value_type*>(&node->_keys[_index]);
 }
 
+// Оператор ++ (переход к следующему ключу)
+// Шаг 1: если есть правый ребёнок, идём в него и затем всё время влево
+// Шаг 2: если есть следующий ключ в том же узле - берём его
+// Шаг 3: иначе поднимаемся вверх, пока не найдём следующий ключ
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_iterator::operator++()
@@ -809,6 +893,7 @@ B_tree<tkey, tvalue, compare, t>::btree_iterator::operator++()
     return *this;
 }
 
+// Постфиксный ++
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator
 B_tree<tkey, tvalue, compare, t>::btree_iterator::operator++(int)
@@ -818,6 +903,7 @@ B_tree<tkey, tvalue, compare, t>::btree_iterator::operator++(int)
     return tmp;
 }
 
+// Оператор -- (переход к предыдущему ключу)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_iterator::operator--()
@@ -859,6 +945,7 @@ B_tree<tkey, tvalue, compare, t>::btree_iterator::operator--()
     return *this;
 }
 
+// Постфиксный --
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator
 B_tree<tkey, tvalue, compare, t>::btree_iterator::operator--(int)
@@ -868,6 +955,7 @@ B_tree<tkey, tvalue, compare, t>::btree_iterator::operator--(int)
     return tmp;
 }
 
+// Сравнение итераторов
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 bool B_tree<tkey, tvalue, compare, t>::btree_iterator::operator==(const self& other) const noexcept
 {
@@ -883,6 +971,7 @@ bool B_tree<tkey, tvalue, compare, t>::btree_iterator::operator!=(const self& ot
     return !(*this == other);
 }
 
+// Глубина текущего итератора в дереве
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 size_t B_tree<tkey, tvalue, compare, t>::btree_iterator::depth() const noexcept
 {
@@ -892,6 +981,7 @@ size_t B_tree<tkey, tvalue, compare, t>::btree_iterator::depth() const noexcept
     return _path.size() - 1;
 }
 
+// Количество ключей в текущем узле
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 size_t B_tree<tkey, tvalue, compare, t>::btree_iterator::current_node_keys_count() const noexcept
 {
@@ -901,18 +991,21 @@ size_t B_tree<tkey, tvalue, compare, t>::btree_iterator::current_node_keys_count
     return (*(_path.top().first))->_keys.size();
 }
 
+// Дошли ли до конца (итератор не валиден)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 bool B_tree<tkey, tvalue, compare, t>::btree_iterator::is_terminate_node() const noexcept
 {
     return _path.empty();
 }
 
+// Индекс текущего ключа в узле
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 size_t B_tree<tkey, tvalue, compare, t>::btree_iterator::index() const noexcept
 {
     return _index;
 }
 
+// Конструктор константного итератора
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::btree_const_iterator::btree_const_iterator(
         const std::stack<std::pair<btree_node* const*, size_t>>& path, size_t index)
@@ -921,6 +1014,7 @@ B_tree<tkey, tvalue, compare, t>::btree_const_iterator::btree_const_iterator(
     _index = index;
 }
 
+// Преобразование из обычного итератора в константный
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::btree_const_iterator::btree_const_iterator(
         const btree_iterator& it) noexcept
@@ -943,6 +1037,7 @@ B_tree<tkey, tvalue, compare, t>::btree_const_iterator::btree_const_iterator(
     _index = it._index;
 }
 
+// Разыменование константного итератора
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator::reference
 B_tree<tkey, tvalue, compare, t>::btree_const_iterator::operator*() const noexcept
@@ -959,6 +1054,7 @@ B_tree<tkey, tvalue, compare, t>::btree_const_iterator::operator->() const noexc
     return reinterpret_cast<const value_type*>(&node->_keys[_index]);
 }
 
+// Оператор ++ для константного итератора (аналогично обычному)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_const_iterator::operator++()
@@ -1009,6 +1105,7 @@ B_tree<tkey, tvalue, compare, t>::btree_const_iterator::operator++(int)
     return tmp;
 }
 
+// Оператор -- для константного итератора (аналогично обычному)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_const_iterator::operator--()
@@ -1104,6 +1201,7 @@ size_t B_tree<tkey, tvalue, compare, t>::btree_const_iterator::index() const noe
     return _index;
 }
 
+// Конструктор обратного итератора
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator::btree_reverse_iterator(
         const std::stack<std::pair<btree_node**, size_t>>& path, size_t index)
@@ -1142,6 +1240,7 @@ B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator::operator->() const noe
     return reinterpret_cast<value_type*>(&node->_keys[_index]);
 }
 
+// ++ обратного итератора = -- обычного
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator::operator++()
@@ -1162,6 +1261,7 @@ B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator::operator++(int)
     return tmp;
 }
 
+// -- обратного итератора = ++ обычного
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator::operator--()
@@ -1227,6 +1327,7 @@ size_t B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator::index() const n
     return _index;
 }
 
+// Конструктор константного обратного итератора
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::btree_const_reverse_iterator(
         const std::stack<std::pair<btree_node* const*, size_t>>& path, size_t index)
@@ -1235,6 +1336,7 @@ B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::btree_const_reve
     _index = index;
 }
 
+// Преобразование из обратного итератора в константный обратный
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::btree_const_reverse_iterator(
         const btree_reverse_iterator& it) noexcept
@@ -1279,6 +1381,7 @@ B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::operator->() con
     return reinterpret_cast<const value_type*>(&node->_keys[_index]);
 }
 
+// ++ константного обратного итератора = -- константного обычного
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::operator++()
@@ -1299,6 +1402,7 @@ B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::operator++(int)
     return tmp;
 }
 
+// -- константного обратного итератора = ++ константного обычного
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator&
 B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::operator--()
@@ -1364,10 +1468,9 @@ size_t B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator::index() c
     return _index;
 }
 
-// endregion iterators implementation
+// ДОСТУП К ЭЛЕМЕНТАМ
 
-// region element access implementation
-
+// at: доступ с проверкой границ (бросает out_of_range если нет ключа)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 tvalue& B_tree<tkey, tvalue, compare, t>::at(const tkey& key)
 {
@@ -1388,6 +1491,7 @@ const tvalue& B_tree<tkey, tvalue, compare, t>::at(const tkey& key) const
     return it->second;
 }
 
+// operator[]: доступ, создаёт элемент с значением по умолчанию если нет
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 tvalue& B_tree<tkey, tvalue, compare, t>::operator[](const tkey& key)
 {
@@ -1402,10 +1506,11 @@ tvalue& B_tree<tkey, tvalue, compare, t>::operator[](tkey&& key)
     return result.first->second;
 }
 
-// endregion element access implementation
+// НАЧАЛЬНЫЕ ИТЕРАТОРЫ
 
-// region iterator begins implementation
-
+// begin(): самый левый ключ в дереве
+// Шаг 1: идём от корня всё время по левым указателям
+// Шаг 2: возвращаем итератор на первый ключ
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator B_tree<tkey, tvalue, compare, t>::begin()
 {
@@ -1424,12 +1529,14 @@ typename B_tree<tkey, tvalue, compare, t>::btree_iterator B_tree<tkey, tvalue, c
     return btree_iterator(path, 0);
 }
 
+// end(): итератор на конец (пустой)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator B_tree<tkey, tvalue, compare, t>::end()
 {
     return btree_iterator();
 }
 
+// Константный begin()
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator B_tree<tkey, tvalue, compare, t>::begin() const
 {
@@ -1466,6 +1573,7 @@ typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator B_tree<tkey, tva
     return end();
 }
 
+// rbegin(): обратный итератор на самый правый ключ
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_reverse_iterator B_tree<tkey, tvalue, compare, t>::rbegin()
 {
@@ -1511,8 +1619,7 @@ typename B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator B_tree<t
 }
 
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
-typename B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator B_tree<tkey, tvalue, compare, t>::rend() const
-{
+typename B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator B_tree<tkey, tvalue, compare, t>::rend() const{
     return btree_const_reverse_iterator();
 }
 
@@ -1528,9 +1635,7 @@ typename B_tree<tkey, tvalue, compare, t>::btree_const_reverse_iterator B_tree<t
     return rend();
 }
 
-// endregion iterator begins implementation
-
-// region lookup implementation
+// ПОИСК
 
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 size_t B_tree<tkey, tvalue, compare, t>::size() const noexcept
@@ -1544,6 +1649,11 @@ bool B_tree<tkey, tvalue, compare, t>::empty() const noexcept
     return _size == 0;
 }
 
+// find: поиск ключа, возвращает итератор (end() если не найден)
+// Шаг 1: спускаемся по дереву, сохраняя путь
+// Шаг 2: в каждом узле ищем позицию ключа
+// Шаг 3: если нашли - возвращаем итератор
+// Шаг 4: если дошли до листа и не нашли - end()
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator B_tree<tkey, tvalue, compare, t>::find(const tkey& key)
 {
@@ -1594,6 +1704,7 @@ typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator B_tree<tkey, tva
     }
 }
 
+// lower_bound: первый элемент >= key
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator B_tree<tkey, tvalue, compare, t>::lower_bound(const tkey& key)
 {
@@ -1662,6 +1773,7 @@ typename B_tree<tkey, tvalue, compare, t>::btree_const_iterator B_tree<tkey, tva
     return btree_const_iterator(candidate, candidate_index);
 }
 
+// upper_bound: первый элемент > key
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator B_tree<tkey, tvalue, compare, t>::upper_bound(const tkey& key)
 {
@@ -1740,10 +1852,9 @@ bool B_tree<tkey, tvalue, compare, t>::contains(const tkey& key) const
     return find(key) != end();
 }
 
-// endregion lookup implementation
+// МОДИФИКАЦИЯ
 
-// region modifiers implementation
-
+// clear: удалить все элементы
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 void B_tree<tkey, tvalue, compare, t>::clear() noexcept
 {
@@ -1752,6 +1863,7 @@ void B_tree<tkey, tvalue, compare, t>::clear() noexcept
     _size = 0;
 }
 
+// insert: вставка пары (копированием)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 std::pair<typename B_tree<tkey, tvalue, compare, t>::btree_iterator, bool>
 B_tree<tkey, tvalue, compare, t>::insert(const tree_data_type& data)
@@ -1760,6 +1872,7 @@ B_tree<tkey, tvalue, compare, t>::insert(const tree_data_type& data)
     return insert(std::move(copy));
 }
 
+// insert: вставка пары (перемещением)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 std::pair<typename B_tree<tkey, tvalue, compare, t>::btree_iterator, bool>
 B_tree<tkey, tvalue, compare, t>::insert(tree_data_type&& data)
@@ -1767,6 +1880,7 @@ B_tree<tkey, tvalue, compare, t>::insert(tree_data_type&& data)
     return emplace(std::move(data.first), std::move(data.second));
 }
 
+// emplace: конструирование и вставка
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 template<typename... Args>
 std::pair<typename B_tree<tkey, tvalue, compare, t>::btree_iterator, bool>
@@ -1802,6 +1916,7 @@ B_tree<tkey, tvalue, compare, t>::emplace(Args&&... args)
     return std::make_pair(find(key_copy), inserted);
 }
 
+// insert_or_assign: вставка или обновление значения
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator
 B_tree<tkey, tvalue, compare, t>::insert_or_assign(const tree_data_type& data)
@@ -1824,6 +1939,7 @@ B_tree<tkey, tvalue, compare, t>::insert_or_assign(tree_data_type&& data)
     return result.first;
 }
 
+// emplace_or_assign: конструирование, вставка или обновление
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 template<typename... Args>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator
@@ -1837,6 +1953,7 @@ B_tree<tkey, tvalue, compare, t>::emplace_or_assign(Args&&... args)
     return result.first;
 }
 
+// erase: удаление по итератору
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator
 B_tree<tkey, tvalue, compare, t>::erase(btree_iterator pos)
@@ -1857,6 +1974,7 @@ B_tree<tkey, tvalue, compare, t>::erase(btree_const_iterator pos)
     return erase(pos->first);
 }
 
+// erase: удаление диапазона
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator
 B_tree<tkey, tvalue, compare, t>::erase(btree_iterator beg, btree_iterator en)
@@ -1879,6 +1997,7 @@ B_tree<tkey, tvalue, compare, t>::erase(btree_const_iterator beg, btree_const_it
     return it;
 }
 
+// erase: удаление по ключу
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 typename B_tree<tkey, tvalue, compare, t>::btree_iterator
 B_tree<tkey, tvalue, compare, t>::erase(const tkey& key)
@@ -1906,8 +2025,7 @@ B_tree<tkey, tvalue, compare, t>::erase(const tkey& key)
     return lower_bound(key);
 }
 
-// endregion modifiers implementation
-
+// Внешние функции сравнения (для удобства использования)
 template<typename tkey, typename tvalue, comparator<tkey> compare, std::size_t t>
 bool compare_pairs(const typename B_tree<tkey, tvalue, compare, t>::tree_data_type &lhs,
                    const typename B_tree<tkey, tvalue, compare, t>::tree_data_type &rhs)
@@ -1920,6 +2038,5 @@ bool compare_keys(const tkey &lhs, const tkey &rhs)
 {
     return compare()(lhs, rhs);
 }
-
 
 #endif
